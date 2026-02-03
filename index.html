@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>YT Comment Map Viewer</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; background:#070b10; color:#e8eef6; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #topbar {
+      position: fixed; left: 12px; right: 12px; top: 10px;
+      display:flex; align-items:center; gap:10px; z-index: 10;
+      padding:10px 12px; border-radius:12px;
+      background: rgba(20, 25, 35, 0.72);
+      border: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(10px);
+    }
+    #leftTitle { flex:1; min-width:260px; }
+    #leftTitle .t { font-weight:700; font-size:14px; }
+    #leftTitle .s { opacity:.75; font-size:12px; margin-top:2px; }
+    .pill { padding:6px 10px; border-radius:999px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); font-size:12px; }
+    button {
+      background: rgba(255,255,255,0.08); color:#e8eef6; border:1px solid rgba(255,255,255,0.10);
+      padding:7px 10px; border-radius:10px; cursor:pointer; font-weight:600;
+    }
+    button:hover { background: rgba(255,255,255,0.12); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    input[type="file"] { color:#e8eef6; font-size:12px; }
+    #canvas { width:100vw; height:100vh; display:block; }
+    #legend {
+      position: fixed; left: 12px; bottom: 12px; z-index: 10;
+      padding:10px 12px; border-radius:12px;
+      background: rgba(20, 25, 35, 0.72);
+      border: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(10px);
+      width: 260px;
+      font-size:12px;
+    }
+    #legend .bar {
+      height:10px; border-radius:999px; margin:8px 0 6px;
+      background: linear-gradient(90deg, #ff4d4d 0%, #9aa4b2 50%, #49d17d 100%);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    #legend .row { display:flex; justify-content:space-between; opacity:.85; }
+    #hint {
+      position: fixed; left: 12px; top: 78px; z-index: 10;
+      padding:10px 12px; border-radius:12px;
+      background: rgba(20, 25, 35, 0.72);
+      border: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(10px);
+      width: 260px;
+      font-size:12px;
+    }
+    #hint input[type="text"] {
+      width:100%; box-sizing:border-box;
+      background: rgba(0,0,0,0.25); color:#e8eef6;
+      border:1px solid rgba(255,255,255,0.10);
+      padding:8px 10px; border-radius:10px;
+      outline:none;
+    }
+    #hint label { display:block; margin-top:8px; opacity:.8; }
+    #hint input[type="range"] { width:100%; }
+    #tooltip {
+      position: fixed; pointer-events:none; z-index: 20;
+      padding:10px 12px; border-radius:12px;
+      background: rgba(10, 12, 18, 0.92);
+      border: 1px solid rgba(255,255,255,0.10);
+      max-width: 420px;
+      display:none;
+      font-size:12px;
+    }
+    #tooltip .h { font-weight:800; font-size:13px; margin-bottom:4px; }
+    #tooltip .k { opacity:.85; margin-bottom:6px; }
+    #tooltip .m { opacity:.9; }
+    #tooltip .ex { margin-top:8px; opacity:.9; }
+    #tooltip .ex b { opacity:.95; }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <div id="leftTitle">
+      <div class="t" id="vidTitle">YT Comment Map Viewer</div>
+      <div class="s" id="vidChan"></div>
+    </div>
+
+    <div class="pill">
+      JSON&nbsp;
+      <input id="file" type="file" accept=".json,application/json"/>
+    </div>
+
+    <button id="btnReset" disabled>Reset</button>
+    <button id="btnPlay" disabled>Play</button>
+    <button id="btnPause" disabled>Pause</button>
+    <button id="btnX1" disabled>X1 (60f)</button>
+    <button id="btnX2" disabled>X2 (120f)</button>
+
+    <div class="pill" id="status">no data</div>
+  </div>
+
+  <div id="hint">
+    <div style="font-weight:800;margin-bottom:6px;">Theme Map</div>
+    <input id="search" type="text" placeholder="Recherche: ex: prix, bug, support" />
+    <label>Taille minimale</label>
+    <input id="minSize" type="range" min="1" max="50" value="1"/>
+    <div style="margin-top:8px; opacity:.8;">
+      Astuces :
+      <ul style="margin:6px 0 0 16px; padding:0; opacity:.9;">
+        <li>Molette : zoom</li>
+        <li>Clic-glisser : déplacer</li>
+        <li>Double-clic : réinitialiser vue</li>
+        <li>Survol : détails</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="legend">
+    <div style="font-weight:800;">Sentiment</div>
+    <div class="bar"></div>
+    <div class="row"><span>négatif</span><span>neutre</span><span>positif</span></div>
+    <div style="margin-top:8px; opacity:.8;">
+      Taille = log(count) • Liens = similarité thèmes
+    </div>
+  </div>
+
+  <canvas id="canvas"></canvas>
+  <div id="tooltip"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const tooltip = document.getElementById('tooltip');
+
+    function resize() {
+      canvas.width = window.innerWidth * devicePixelRatio;
+      canvas.height = window.innerHeight * devicePixelRatio;
+      canvas.style.width = window.innerWidth + 'px';
+      canvas.style.height = window.innerHeight + 'px';
+      ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+    }
+    window.addEventListener('resize', () => { resize(); render(); });
+    resize();
+
+    let data = null;
+    let mode = 'x2'; // x1 or x2
+    let frameIndex = 0;
+    let playing = false;
+    let timer = null;
+
+    let nodesStatic = [];
+    let edgesStatic = [];
+
+    // visible state (cumulative)
+    let visibleNodeIds = new Set();
+    let visibleNodes = [];
+    let visibleEdges = [];
+
+    // simulation + view transform
+    let sim = null;
+    // cache node positions across simulation restarts (prevents "bounce/pop")
+    let posCache = new Map();
+    let transform = d3.zoomIdentity;
+    let dragNodeId = null;
+
+    const searchEl = document.getElementById('search');
+    const minSizeEl = document.getElementById('minSize');
+
+    function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+
+    // score in [-1..1]
+    function colorFromScore(score) {
+      const s = Math.max(-1, Math.min(1, (score ?? 0)));
+      if (s < 0) {
+        const t = (s + 1); // 0..1
+        // red -> gray
+        return mixHex("#ff4d4d", "#9aa4b2", t);
+      } else {
+        const t = s; // 0..1
+        // gray -> green
+        return mixHex("#9aa4b2", "#49d17d", t);
+      }
+    }
+    function mixHex(a,b,t){
+      const A = hexToRgb(a), B = hexToRgb(b);
+      const r = Math.round(A.r + (B.r - A.r) * t);
+      const g = Math.round(A.g + (B.g - A.g) * t);
+      const bl = Math.round(A.b + (B.b - A.b) * t);
+      return `rgb(${r},${g},${bl})`;
+    }
+    function hexToRgb(h){
+      const x = h.replace('#','');
+      return { r: parseInt(x.slice(0,2),16), g: parseInt(x.slice(2,4),16), b: parseInt(x.slice(4,6),16) };
+    }
+
+    // radius based on count (log)
+    function radiusFor(node) {
+      const c = node?.metrics?.count ?? node?.size ?? 1;
+      return 6 + Math.log(1 + c) * 5;
+    }
+
+    function getFrames() {
+      if (!data) return [];
+      const tl = data.timeline?.[mode];
+      return tl?.frames ?? [];
+    }
+
+    // IMPORTANT: cumulative born ids up to frameIndex (inclusive)
+    function computeVisibleIds() {
+      const frames = getFrames();
+      const upto = Math.max(0, Math.min(frameIndex, frames.length - 1));
+      const ids = new Set();
+
+      for (let i=0; i<=upto; i++) {
+        const f = frames[i];
+        const born = Array.isArray(f?.born_ids) ? f.born_ids
+                  : Array.isArray(f?.born) ? f.born
+                  : Array.isArray(f?.nodes) ? f.nodes.map(n => n.id)
+                  : [];
+        for (const id of born) ids.add(id);
+      }
+      return ids;
+    }
+
+    function buildVisibleGraph() {
+      if (!data) return;
+
+      // base = map.nodes
+      const allNodes = data.map?.nodes ?? data.map?.nodes_static ?? [];
+      const allEdges = data.map?.edges ?? [];
+
+      visibleNodeIds = computeVisibleIds();
+
+      // if timeline is "empty" (ex: born_count stays 0), fallback to full static map
+      if (visibleNodeIds.size === 0 && allNodes.length > 0) {
+        visibleNodeIds = new Set(allNodes.map(n => n.id));
+      }
+
+      const minSize = parseInt(minSizeEl.value || "1", 10);
+      const q = (searchEl.value || "").trim().toLowerCase();
+
+      visibleNodes = allNodes
+        .filter(n => visibleNodeIds.has(n.id))
+        .filter(n => (n.metrics?.count ?? n.size ?? 1) >= minSize)
+        .filter(n => {
+          if (!q) return true;
+          const hay = [
+            n.label,
+            ...(n.keywords_3 ?? []),
+            ...(n.keywords ?? []),
+            n.summary
+          ].filter(Boolean).join(" ").toLowerCase();
+          return hay.includes(q);
+        });
+
+      const visibleSet = new Set(visibleNodes.map(n => n.id));
+      visibleEdges = allEdges.filter(e => visibleSet.has(e.source) && visibleSet.has(e.target));
+    }
+
+
+    function computeTargets(allNodes) {
+      // Map original x/y (UMAP coords) into a stable layout scale.
+      // Goal: visible poles + local neighborhoods (not "stars in space").
+      const xs = allNodes.map(n => n.x).filter(v => Number.isFinite(v));
+      const ys = allNodes.map(n => n.y).filter(v => Number.isFinite(v));
+      if (!xs.length || !ys.length) {
+        return { get:(n)=>({tx:(Math.random()*2-1)*200, ty:(Math.random()*2-1)*200}) };
+      }
+
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+
+      const W = 520, H = 360;
+      const sx = d3.scaleLinear().domain([minX, maxX]).range([-W, W]);
+      const sy = d3.scaleLinear().domain([minY, maxY]).range([-H, H]);
+
+      return { get: (n) => ({ tx: sx(n.x), ty: sy(n.y) }) };
+    }
+
+    function startSimulation() {
+      if (!data) return;
+      if (sim) sim.stop();
+
+      // seed initial positions from data if present
+      const nodeById = new Map(visibleNodes.map(n => [n.id, n]));
+      const targets = computeTargets(visibleNodes);
+      const nodes = visibleNodes.map(n => {
+        const cached = posCache.get(n.id);
+        const t = targets.get(n);
+        const tx = t.tx, ty = t.ty;
+        return {
+          ...n,
+          tx, ty,
+          // Start near target to avoid initial 'explosion'
+          x: (cached?.x ?? (Number.isFinite(tx) ? tx : (Math.random()*2-1)*200)),
+          y: (cached?.y ?? (Number.isFinite(ty) ? ty : (Math.random()*2-1)*200)),
+        };
+      });
+
+      const links = visibleEdges.map(e => ({
+        source: nodeById.get(e.source)?.id ?? e.source,
+        target: nodeById.get(e.target)?.id ?? e.target,
+        weight: e.weight ?? e.sim ?? 0.5
+      }));
+
+      // rebuild nodeById with sim nodes
+      const simNodeById = new Map(nodes.map(n => [n.id, n]));
+
+      const simLinks = links.map(l => ({
+        source: simNodeById.get(l.source),
+        target: simNodeById.get(l.target),
+        weight: l.weight
+      })).filter(l => l.source && l.target);
+
+      sim = d3.forceSimulation(nodes)
+        .force("charge", d3.forceManyBody().strength(-55))
+        .force("center", d3.forceCenter(0, 0))
+        .force("link", d3.forceLink(simLinks).id(d => d.id).distance(l => 50 + (1 - (l.weight ?? 0.5)) * 90).strength(l => 0.25 + (l.weight ?? 0.5) * 0.75))
+        .force("collide", d3.forceCollide().radius(d => radiusFor(d) + 6).iterations(2))
+        .force("targetX", d3.forceX(d => d.tx ?? 0).strength(0.08))
+        .force("targetY", d3.forceY(d => d.ty ?? 0).strength(0.08))
+        .on("tick", () => {
+        for (const n of sim.nodes()) posCache.set(n.id, {x:n.x, y:n.y});
+        render();
+      });
+
+      // keep transform stable across restarts
+      render();
+    }
+
+    function render() {
+      if (!ctx) return;
+      ctx.save();
+      ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
+
+      // subtle vignette background
+      const grd = ctx.createRadialGradient(window.innerWidth/2, window.innerHeight/2, 50, window.innerWidth/2, window.innerHeight/2, Math.max(window.innerWidth, window.innerHeight));
+      grd.addColorStop(0, "rgba(20,26,36,0.15)");
+      grd.addColorStop(1, "rgba(0,0,0,0.0)");
+      ctx.fillStyle = grd;
+      ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
+
+      // world -> screen
+      ctx.translate(transform.x, transform.y);
+      ctx.scale(transform.k, transform.k);
+
+      const nodes = sim ? sim.nodes() : [];
+      const nodeById = new Map(nodes.map(n => [n.id, n]));
+
+      // edges
+      ctx.globalAlpha = 0.45;
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(220,230,255,0.18)";
+      for (const e of visibleEdges) {
+        const a = nodeById.get(e.source);
+        const b = nodeById.get(e.target);
+        if (!a || !b) continue;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+
+      // nodes + labels
+      ctx.globalAlpha = 1;
+
+      for (const n of nodes) {
+        const r = radiusFor(n);
+
+        // glow
+        const col = colorFromScore(n.sentiment?.score ?? n.sentiment_score ?? 0);
+        ctx.save();
+        ctx.shadowColor = col;
+        ctx.shadowBlur = 18;
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r, 0, Math.PI*2);
+        ctx.fill();
+        ctx.restore();
+
+        // inner fill
+        ctx.fillStyle = "rgba(0,0,0,0.25)";
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, Math.max(0, r-2), 0, Math.PI*2);
+        ctx.fill();
+
+        // label + keywords
+        const label = (n.label || "").trim();
+        const k3 = (n.keywords_3 ?? n.keywords ?? []).slice(0,3);
+        const kw = k3.length ? k3.join(" • ") : "";
+
+        // only show text if big enough on screen
+        const screenR = r * transform.k;
+        if (screenR > 18) {
+          ctx.font = `700 ${Math.max(11, Math.min(18, screenR * 0.35))}px system-ui`;
+          ctx.fillStyle = "rgba(240,245,255,0.92)";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(label || "—", n.x, n.y - 8);
+
+          if (kw) {
+            ctx.font = `600 ${Math.max(10, Math.min(14, screenR * 0.28))}px system-ui`;
+            ctx.fillStyle = "rgba(240,245,255,0.70)";
+            ctx.fillText(kw, n.x, n.y + 10);
+          }
+        }
+      }
+
+      ctx.restore();
+    }
+
+    // zoom + pan
+    const zoom = d3.zoom()
+      .scaleExtent([0.15, 6])
+      .on("zoom", (ev) => { transform = ev.transform; render(); });
+
+    d3.select(canvas).call(zoom).on("dblclick.zoom", null);
+
+    canvas.addEventListener("dblclick", () => {
+      d3.select(canvas).transition().duration(250).call(zoom.transform, d3.zoomIdentity);
+    });
+
+    // hover tooltip
+    canvas.addEventListener("mousemove", (ev) => {
+      if (!sim) return;
+      const mx = ev.clientX, my = ev.clientY;
+      const inv = transform.invert([mx, my]);
+      const x = inv[0], y = inv[1];
+
+      // find closest
+      let best = null, bestD2 = Infinity;
+      for (const n of sim.nodes()) {
+        const dx = n.x - x, dy = n.y - y;
+        const d2 = dx*dx + dy*dy;
+        const r = radiusFor(n);
+        if (d2 <= (r*r) && d2 < bestD2) { best = n; bestD2 = d2; }
+      }
+      if (!best) {
+        tooltip.style.display = "none";
+        return;
+      }
+      const k3 = (best.keywords_3 ?? best.keywords ?? []).slice(0,3);
+      tooltip.innerHTML = `
+        <div class="h">${escapeHtml(best.label || "—")}</div>
+        <div class="k">${k3.length ? escapeHtml(k3.join(" • ")) : ""}</div>
+        <div class="m">${escapeHtml(best.summary || "")}</div>
+        <div class="ex">
+          <div><b>+ </b>${escapeHtml(best.examples?.positive || "")}</div>
+          <div style="margin-top:4px;"><b>- </b>${escapeHtml(best.examples?.negative || "")}</div>
+        </div>
+      `;
+      tooltip.style.display = "block";
+      tooltip.style.left = (mx + 14) + "px";
+      tooltip.style.top = (my + 14) + "px";
+    });
+
+    function escapeHtml(s){
+      return (s ?? "").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    // playback
+    function updateStatus() {
+      const frames = getFrames();
+      const total = frames.length || 0;
+      document.getElementById('status').textContent =
+        data ? `mode:${mode} frame:${Math.min(frameIndex+1,total)}/${total} clusters:${visibleNodes.length}` : 'no data';
+    }
+
+    function applyFrame() {
+      buildVisibleGraph();
+      startSimulation();
+      updateStatus();
+    }
+
+    function play() {
+      if (!data) return;
+      if (timer) clearInterval(timer);
+      playing = true;
+      timer = setInterval(() => {
+        const frames = getFrames();
+        if (frames.length === 0) return;
+        frameIndex++;
+        if (frameIndex >= frames.length) {
+          frameIndex = frames.length - 1;
+          pause();
+          return;
+        }
+        applyFrame();
+      }, 1000 / (mode === 'x2' ? 2 : 1)); // x1=1fps, x2=2fps
+    }
+    function pause() {
+      playing = false;
+      if (timer) clearInterval(timer);
+      timer = null;
+    }
+    function reset() {
+      pause();
+      frameIndex = 0;
+      applyFrame();
+    }
+
+    // ui
+    document.getElementById('btnPlay').addEventListener('click', play);
+    document.getElementById('btnPause').addEventListener('click', pause);
+    document.getElementById('btnReset').addEventListener('click', reset);
+    document.getElementById('btnX1').addEventListener('click', () => { mode='x1'; reset(); });
+    document.getElementById('btnX2').addEventListener('click', () => { mode='x2'; reset(); });
+
+    searchEl.addEventListener('input', () => applyFrame());
+    minSizeEl.addEventListener('input', () => applyFrame());
+
+    document.getElementById('file').addEventListener('change', async (ev) => {
+      const f = ev.target.files?.[0];
+      if (!f) return;
+      const txt = await f.text();
+      data = JSON.parse(txt);
+
+      // header
+      document.getElementById('vidTitle').textContent = data.video?.title || "YT Comment Map Viewer";
+      document.getElementById('vidChan').textContent = data.video?.channel ? (data.video.channel + (data.video.published_at ? " • " + data.video.published_at : "")) : "";
+
+      // enable buttons
+      for (const id of ['btnReset','btnPlay','btnPause','btnX1','btnX2']) document.getElementById(id).disabled = false;
+
+      mode = (data.timeline?.x2?.frames?.length ? 'x2' : 'x1');
+      frameIndex = 0;
+      applyFrame();
+    });
+
+    // initial hint
+    updateStatus();
+  </script>
+</body>
+</html>
